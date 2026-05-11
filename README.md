@@ -1,131 +1,121 @@
-## AWS DefenderX
+# AWS DefenderX
 
-Cloud Misconfiguration Attack Simulator + Auto Remediation Platform.
+**AWS DefenderX** is a cloud security project that finds risky AWS settings, stores findings, explains risk with AI, and shows everything in a simple SOC-style dashboard. You can run it **only on your laptop** (demo mode) or connect it to a **real AWS account** (automatic monitoring).
 
-This repo contains:
-- **Local SOC dashboard** (FastAPI + HTML/JS)
-- **AWS automated monitoring : CloudTrail/EventBridge + scheduled scanner Lambdas → DynamoDB → API Gateway
-- **AI risk summarization** (OpenAI; key stored in AWS Secrets Manager for cloud)
-- **Optional outbound integrations** (Splunk/Elastic/webhooks for Wazuh/Suricata/Falco)
+---
 
-- Detects common AWS misconfigurations from **simulated events**
-- Stores findings
-- Generates an AI risk summary (optional)
-- Renders a simple SOC dashboard
-- Supports “optional remediation” as a stub (records remediation actions)
+## What this project does
 
-AWS monitoring is fully automated via `aws/sam` (no manual log uploads).
+| Area | What you get |
+|------|----------------|
+| **Detection** | Public S3 exposure, security groups open to `0.0.0.0/0`, root usage signals, MFA posture, CloudTrail logging state, unencrypted EBS, overly permissive IAM patterns (where modeled). |
+| **Storage** | Local: SQLite. AWS: DynamoDB. |
+| **UI** | Custom SOC dashboard (browser). |
+| **AI** | OpenAI summaries (local `.env` or AWS Secrets Manager in cloud). |
+| **AWS automation** | CloudTrail → EventBridge → Lambda, plus a scheduled scanner Lambda. No manual log uploads. |
+| **Optional tools** | Forward alerts to Splunk (HEC), Elastic, or generic webhooks (e.g. adapters for Wazuh / Suricata / Falco). |
+| **Docker** | Optional: runs **Elasticsearch + Kibana** on your machine only. It does **not** replace Python, AWS CLI, or SAM. |
 
-### Run locally
+---
 
-Prereqs: Python 3.11+
+## What you need on your computer
+
+| Software | Required? | Why |
+|----------|------------|-----|
+| **Python 3.11+** | Yes (for local dashboard + SAM builds) | Backend and Lambda packaging. |
+| **Git** | Yes (to clone and push) | Version control. |
+| **AWS CLI** | Yes (for AWS deploy) | `aws configure` or SSO. |
+| **AWS SAM CLI** | Yes (for AWS deploy) | `sam build` / `sam deploy`. |
+| **Docker Desktop** | Optional | Only if you want local Elastic/Kibana from `docker-compose.yml`. |
+
+**Docker does not “handle everything.”** You still need Python for the dashboard; AWS Lambdas run in AWS, not inside your Docker Compose file.
+
+---
+
+## Quick start (after you clone)
+
+### 1) Clone the repository
 
 ```bash
+git clone https://github.com/Luckychows/AWS-DefenderX.git
+cd AWS-DefenderX
+```
+
+(Use your real repo URL if the name or owner differs.)
+
+### 2) Run the local dashboard (simulator mode)
+
+```powershell
 cd backend
 python -m venv .venv
 .\.venv\Scripts\activate
 pip install -r requirements.txt
+copy .env.example .env
+# Edit .env: set OPENAI_API_KEY=sk-...  (never commit real keys)
 uvicorn app.main:app --reload
 ```
 
-Open:
-- Dashboard: `http://127.0.0.1:8000/`
-- API docs: `http://127.0.0.1:8000/docs`
+Open **http://127.0.0.1:8000/** — use **Load sample findings** to demo rules locally.
 
-### Quick demo flow
+If PowerShell blocks `Activate.ps1`:
 
-1) Load sample “cloud events”:
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/simulate/load-sample
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 ```
 
-2) View findings:
+### 3) (Optional) Local Elastic + Kibana
 
-```bash
-curl http://127.0.0.1:8000/api/findings
-```
+From repo root:
 
-3) Generate AI summary for a finding (optional):
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/findings/<FINDING_ID>/summarize
-```
-
-If you set `OPENAI_API_KEY`, it will call OpenAI by default. Otherwise it uses a deterministic offline summary.
-
-### Integrations (local)
-
-By default, every created finding is also emitted as an “alert event” to a local JSONL file:
-
-- `backend/app/data/alerts.jsonl`
-
-You can additionally emit to Splunk HEC and/or Elastic by setting env vars:
-
-- **Splunk HEC**
-  - `ALERT_SINKS=jsonl,splunk`
-  - `SPLUNK_HEC_URL` (example: `https://splunk:8088/services/collector`)
-  - `SPLUNK_HEC_TOKEN`
-  - Optional: `SPLUNK_HEC_INDEX`, `SPLUNK_HEC_SOURCETYPE`
-
-- **Elastic**
-  - `ALERT_SINKS=jsonl,elastic`
-  - `ELASTIC_URL` (example: `https://elastic:9200`)
-  - `ELASTIC_API_KEY`
-  - Optional: `ELASTIC_INDEX`
-
-### Local Elastic + Kibana (optional, via Docker)
-
-If you want a real “SIEM-like” place to view alerts without installing anything:
-
-```bash
+```powershell
 docker compose up -d
 ```
 
-Then configure the backend:
+Then set in `backend/.env` (or environment): `ALERT_SINKS=jsonl,elastic` and `ELASTIC_URL=http://127.0.0.1:9200`.  
+Kibana: **http://127.0.0.1:5601/**
 
-- `ALERT_SINKS=jsonl,elastic`
-- `ELASTIC_URL=http://127.0.0.1:9200`
+### 4) Connect the dashboard to your deployed AWS API
 
-Open Kibana at `http://127.0.0.1:5601/`.
+1. Deploy AWS stack (see **`aws/README_AWS_SETUP.md`**).
+2. Edit **`backend/app/templates/index.html`** — set `window.CMS_CONFIG`:
 
-### Desktop folder note (Windows)
-
-This environment can only write inside the current workspace directory. When you’re ready to move the finished project to your Desktop, run:
-
-```powershell
-Copy-Item -Recurse -Force "C:\Users\lucky\.cursor\projects\empty-window\cloud-misconfig-sim" "$env:USERPROFILE\Desktop\cloud-misconfig-sim"
-```
-
-### Deploy to AWS (automated monitoring)
-
-When you’re ready, you’ll replace the local ingest with real AWS signals (Option A = fully automated):
-
-- **AWS Config + CloudTrail**: enable organization-wide if possible
-- **EventBridge**: route relevant events to a rule that targets a Lambda
-- **Lambda detection engine**: runs detections automatically (no log uploads)
-- **Scheduled scanner Lambda**: catches “state” issues (S3/SG/EBS/CloudTrail posture)
-- **DynamoDB**: stores findings centrally
-- **API Gateway + Lambda**: serves findings + AI summaries
-
-Follow: `aws/README_AWS_SETUP.md`
-
-### Cloud dashboard mode (use deployed AWS API)
-
-You can point the local dashboard UI to the deployed AWS API:
-
-1) Open `backend/app/templates/index.html`
-2) Edit `window.CMS_CONFIG`:
-
-```html
+```js
 window.CMS_CONFIG = {
-  apiBaseUrl: "https://<api-id>.execute-api.<region>.amazonaws.com/Prod",
-  apiToken: "<ApiAuthToken-from-sam-deploy>",
+  apiBaseUrl: "https://YOUR_API_ID.execute-api.YOUR_REGION.amazonaws.com/Prod",
+  apiToken: "YOUR_SAM_PARAMETER_ApiAuthToken",
 };
 ```
 
-3) Restart backend and open `http://127.0.0.1:8000/`
+3. Restart `uvicorn` and refresh the dashboard.  
+   “Load sample” is disabled in cloud mode; findings come from AWS.
 
-The UI will now read/write against cloud findings instead of local simulator endpoints.
+---
 
-### GitHub safety
+## What you do in your AWS account (summary)
+
+Do these **once** in the AWS Console (full step-by-step: **`aws/README_AWS_SETUP.md`**):
+
+1. Turn on **CloudTrail** (multi-region, management events, logging on).  
+2. Turn on **AWS Config** (recording on).  
+3. Create **Secrets Manager** secret `cloud-misconfig/openai` with key **`OPENAI_API_KEY`**.  
+4. On your PC: `cd aws/sam` → `sam build` → `sam deploy --guided` (set region, stack name, `ApiAuthToken`, capabilities including **NAMED_IAM** if prompted).  
+5. In **API Gateway**, enable **CORS** for your browser origin and header **`x-api-token`**, then **Deploy** to `Prod`.  
+6. Invoke **PeriodicScannerFunction** once to see findings immediately.
+
+---
+
+## Project layout (short)
+
+- **`backend/`** — FastAPI app, dashboard, local rules and SQLite.  
+- **`aws/sam/`** — SAM template + Lambda code for real AWS monitoring.  
+- **`docker-compose.yml`** — Optional local Elastic stack.  
+
+
+---
+
+## More help
+
+- **Full AWS deploy and parameters:** [`aws/README_AWS_SETUP.md`](aws/README_AWS_SETUP.md)  
+- **API in cloud:** all protected routes need header `x-api-token: <your token>`.
+
+---
