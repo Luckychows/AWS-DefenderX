@@ -1,0 +1,425 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Cloud misconfiguration simulator - automated AWS monitoring (Option A)
+
+Globals:
+  Function:
+    Runtime: python3.11
+    Timeout: 30
+    MemorySize: 256
+    Tracing: Active
+
+Parameters:
+  FindingsTableName:
+    Type: String
+    Default: cloud-misconfig-findings
+  OpenAISecretName:
+    Type: String
+    Default: cloud-misconfig/openai
+  # Common org guardrails require resource tags.
+  TagProject:
+    Type: String
+    Default: cloud-misconfig-sim
+  TagOwner:
+    Type: String
+    Default: lucky
+  TagEnvironment:
+    Type: String
+    Default: dev
+  # Some orgs enforce an IAM permissions boundary for all roles.
+  PermissionsBoundaryArn:
+    Type: String
+    Default: ""
+  ApiAuthToken:
+    Type: String
+    NoEcho: true
+    Default: "change-me"
+  EnableAutoRemediation:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "false"
+  EnableSecurityIntegrations:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "false"
+  SplunkHecUrl:
+    Type: String
+    Default: ""
+  SplunkHecToken:
+    Type: String
+    NoEcho: true
+    Default: ""
+  SplunkHecIndex:
+    Type: String
+    Default: "main"
+  ElasticUrl:
+    Type: String
+    Default: ""
+  ElasticApiKey:
+    Type: String
+    NoEcho: true
+    Default: ""
+  ElasticIndex:
+    Type: String
+    Default: "cloud-misconfig-findings"
+  WazuhWebhookUrl:
+    Type: String
+    Default: ""
+  WazuhApiKey:
+    Type: String
+    NoEcho: true
+    Default: ""
+  SuricataWebhookUrl:
+    Type: String
+    Default: ""
+  SuricataApiKey:
+    Type: String
+    NoEcho: true
+    Default: ""
+  FalcoWebhookUrl:
+    Type: String
+    Default: ""
+  FalcoApiKey:
+    Type: String
+    NoEcho: true
+    Default: ""
+
+Resources:
+  FindingsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref FindingsTableName
+      BillingMode: PAY_PER_REQUEST
+      Tags:
+        - Key: Project
+          Value: !Ref TagProject
+        - Key: Owner
+          Value: !Ref TagOwner
+        - Key: Environment
+          Value: !Ref TagEnvironment
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+        - AttributeName: gsi1pk
+          AttributeType: S
+        - AttributeName: gsi1sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: gsi1
+          KeySchema:
+            - AttributeName: gsi1pk
+              KeyType: HASH
+            - AttributeName: gsi1sk
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  RealtimeDetectorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-realtime-detector"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      PermissionsBoundary: !If [HasBoundary, !Ref PermissionsBoundaryArn, !Ref "AWS::NoValue"]
+      Policies:
+        - PolicyName: DynamoCrud
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                Resource:
+                  - !GetAtt FindingsTable.Arn
+                  - !Sub "${FindingsTable.Arn}/index/*"
+      Tags:
+        - Key: Project
+          Value: !Ref TagProject
+        - Key: Owner
+          Value: !Ref TagOwner
+        - Key: Environment
+          Value: !Ref TagEnvironment
+
+  RealtimeDetectorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: lambdas/detector/
+      Handler: app.handler
+      Role: !GetAtt RealtimeDetectorRole.Arn
+      Tags:
+        Project: !Ref TagProject
+        Owner: !Ref TagOwner
+        Environment: !Ref TagEnvironment
+      Environment:
+        Variables:
+          FINDINGS_TABLE: !Ref FindingsTableName
+          ENABLE_SECURITY_INTEGRATIONS: !Ref EnableSecurityIntegrations
+          SPLUNK_HEC_URL: !Ref SplunkHecUrl
+          SPLUNK_HEC_TOKEN: !Ref SplunkHecToken
+          SPLUNK_HEC_INDEX: !Ref SplunkHecIndex
+          ELASTIC_URL: !Ref ElasticUrl
+          ELASTIC_API_KEY: !Ref ElasticApiKey
+          ELASTIC_INDEX: !Ref ElasticIndex
+          WAZUH_WEBHOOK_URL: !Ref WazuhWebhookUrl
+          WAZUH_API_KEY: !Ref WazuhApiKey
+          SURICATA_WEBHOOK_URL: !Ref SuricataWebhookUrl
+          SURICATA_API_KEY: !Ref SuricataApiKey
+          FALCO_WEBHOOK_URL: !Ref FalcoWebhookUrl
+          FALCO_API_KEY: !Ref FalcoApiKey
+      Events:
+        RootConsoleLogin:
+          Type: EventBridgeRule
+          Properties:
+            Pattern:
+              source: ["aws.signin"]
+              detail-type: ["AWS Console Sign In via CloudTrail"]
+              detail:
+                userIdentity:
+                  type: ["Root"]
+        SecurityGroupIngress:
+          Type: EventBridgeRule
+          Properties:
+            Pattern:
+              source: ["aws.ec2"]
+              detail-type: ["AWS API Call via CloudTrail"]
+              detail:
+                eventSource: ["ec2.amazonaws.com"]
+                eventName: ["AuthorizeSecurityGroupIngress"]
+        S3PolicyOrAclChange:
+          Type: EventBridgeRule
+          Properties:
+            Pattern:
+              source: ["aws.s3"]
+              detail-type: ["AWS API Call via CloudTrail"]
+              detail:
+                eventSource: ["s3.amazonaws.com"]
+                eventName: ["PutBucketAcl", "PutBucketPolicy", "PutPublicAccessBlock"]
+        CloudTrailStop:
+          Type: EventBridgeRule
+          Properties:
+            Pattern:
+              source: ["aws.cloudtrail"]
+              detail-type: ["AWS API Call via CloudTrail"]
+              detail:
+                eventSource: ["cloudtrail.amazonaws.com"]
+                eventName: ["StopLogging", "DeleteTrail", "UpdateTrail"]
+
+  PeriodicScannerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-periodic-scanner"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      PermissionsBoundary: !If [HasBoundary, !Ref PermissionsBoundaryArn, !Ref "AWS::NoValue"]
+      Policies:
+        - PolicyName: DynamoCrud
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                Resource:
+                  - !GetAtt FindingsTable.Arn
+                  - !Sub "${FindingsTable.Arn}/index/*"
+        - PolicyName: ScannerRead
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:ListAllMyBuckets
+                  - s3:GetBucketPolicyStatus
+                  - s3:GetBucketPublicAccessBlock
+                  - s3:GetBucketPolicy
+                  - s3:GetBucketAcl
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeSecurityGroups
+                  - ec2:DescribeVolumes
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - iam:GetAccountSummary
+                  - iam:ListUsers
+                  - iam:ListMFADevices
+                  - iam:ListAttachedUserPolicies
+                  - iam:ListUserPolicies
+                  - iam:GetUserPolicy
+                  - iam:GetPolicy
+                  - iam:GetPolicyVersion
+                  - iam:ListPolicyVersions
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - cloudtrail:DescribeTrails
+                  - cloudtrail:GetTrailStatus
+                Resource: "*"
+      Tags:
+        - Key: Project
+          Value: !Ref TagProject
+        - Key: Owner
+          Value: !Ref TagOwner
+        - Key: Environment
+          Value: !Ref TagEnvironment
+
+  PeriodicScannerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: lambdas/scanner/
+      Handler: app.handler
+      Timeout: 120
+      MemorySize: 512
+      Role: !GetAtt PeriodicScannerRole.Arn
+      Tags:
+        Project: !Ref TagProject
+        Owner: !Ref TagOwner
+        Environment: !Ref TagEnvironment
+      Environment:
+        Variables:
+          FINDINGS_TABLE: !Ref FindingsTableName
+          ENABLE_SECURITY_INTEGRATIONS: !Ref EnableSecurityIntegrations
+          SPLUNK_HEC_URL: !Ref SplunkHecUrl
+          SPLUNK_HEC_TOKEN: !Ref SplunkHecToken
+          SPLUNK_HEC_INDEX: !Ref SplunkHecIndex
+          ELASTIC_URL: !Ref ElasticUrl
+          ELASTIC_API_KEY: !Ref ElasticApiKey
+          ELASTIC_INDEX: !Ref ElasticIndex
+          WAZUH_WEBHOOK_URL: !Ref WazuhWebhookUrl
+          WAZUH_API_KEY: !Ref WazuhApiKey
+          SURICATA_WEBHOOK_URL: !Ref SuricataWebhookUrl
+          SURICATA_API_KEY: !Ref SuricataApiKey
+          FALCO_WEBHOOK_URL: !Ref FalcoWebhookUrl
+          FALCO_API_KEY: !Ref FalcoApiKey
+      Events:
+        Schedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(15 minutes)
+
+  ApiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-api"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      PermissionsBoundary: !If [HasBoundary, !Ref PermissionsBoundaryArn, !Ref "AWS::NoValue"]
+      Policies:
+        - PolicyName: DynamoRead
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                Resource:
+                  - !GetAtt FindingsTable.Arn
+                  - !Sub "${FindingsTable.Arn}/index/*"
+        - PolicyName: SecretRead
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: "*"
+        - PolicyName: RemediationWrite
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:UpdateItem
+                  - dynamodb:PutItem
+                Resource:
+                  - !GetAtt FindingsTable.Arn
+                  - !Sub "${FindingsTable.Arn}/index/*"
+              - Effect: Allow
+                Action:
+                  - s3:PutBucketPublicAccessBlock
+                  - s3:PutBucketAcl
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - ec2:RevokeSecurityGroupIngress
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - cloudtrail:StartLogging
+                Resource: "*"
+      Tags:
+        - Key: Project
+          Value: !Ref TagProject
+        - Key: Owner
+          Value: !Ref TagOwner
+        - Key: Environment
+          Value: !Ref TagEnvironment
+
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: lambdas/api/
+      Handler: app.handler
+      Timeout: 30
+      MemorySize: 512
+      Role: !GetAtt ApiRole.Arn
+      Tags:
+        Project: !Ref TagProject
+        Owner: !Ref TagOwner
+        Environment: !Ref TagEnvironment
+      Environment:
+        Variables:
+          FINDINGS_TABLE: !Ref FindingsTableName
+          OPENAI_SECRET_NAME: !Ref OpenAISecretName
+          API_AUTH_TOKEN: !Ref ApiAuthToken
+          ENABLE_AUTO_REMEDIATION: !Ref EnableAutoRemediation
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /{proxy+}
+            Method: ANY
+
+Outputs:
+  ApiUrl:
+    Description: API base URL
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod"
+
+Conditions:
+  HasBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, ""]]

@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+backend/app/data/findings.sqlite3
+backend/app/data/*.sqlite3
+*.log
+.DS_Store
+backend/.env
+.aws-sam/
+aws/sam/samconfig.toml
+backend/app/data/alerts.jsonl

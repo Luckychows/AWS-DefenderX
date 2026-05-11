@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Cloud Misconfig SOC Dashboard</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <div class="logo">CMS</div>
+        <div>
+          <div class="title">Cloud Misconfiguration Simulator</div>
+          <div class="subtitle">SOC dashboard (local MVP)</div>
+        </div>
+      </div>
+      <div class="actions">
+        <button id="loadSampleBtn" class="btn primary">Load sample findings</button>
+        <button id="refreshBtn" class="btn">Refresh</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="panel">
+        <div class="panel-header">
+          <div class="panel-title">Findings</div>
+          <div class="panel-meta" id="stats"></div>
+        </div>
+
+        <div class="filters">
+          <label class="chip">
+            Status
+            <select id="statusFilter">
+              <option value="">All</option>
+              <option value="open">Open</option>
+              <option value="remediated">Remediated</option>
+              <option value="suppressed">Suppressed</option>
+            </select>
+          </label>
+          <label class="chip">
+            Limit
+            <select id="limitFilter">
+              <option value="50">50</option>
+              <option value="200" selected>200</option>
+              <option value="500">500</option>
+            </select>
+          </label>
+        </div>
+
+        <div id="findings" class="list"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <div class="panel-title">Details</div>
+          <div class="panel-meta" id="detailMeta">Select a finding</div>
+        </div>
+
+        <div id="detail" class="detail empty">
+          <div class="hint">
+            Click a finding on the left. Then you can generate an AI summary or record a remediation.
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span>Tip: use <code>/docs</code> for API testing.</span>
+    </footer>
+
+    <script>
+      // For cloud mode, set apiBaseUrl + apiToken and reload.
+      // Example:
+      // apiBaseUrl: "https://your-api-id.execute-api.ap-south-2.amazonaws.com/Prod"
+      // apiToken: "your-shared-token"
+      window.CMS_CONFIG = {
+        apiBaseUrl: "",
+        apiToken: "",
+      };
+    </script>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
